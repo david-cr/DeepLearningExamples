@@ -32,6 +32,8 @@ import torch.nn as nn
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data.distributed
+import torch.cuda.profiler as profiler
+import torch.autograd.profiler
 
 import seq2seq.data.config as config
 import seq2seq.train.trainer as trainers
@@ -44,6 +46,8 @@ from seq2seq.inference.translator import Translator
 from seq2seq.models.gnmt import GNMT
 from seq2seq.train.smoothing import LabelSmoothing
 from seq2seq.train.table import TrainingTable
+
+import pyprof
 
 
 def parse_args():
@@ -552,7 +556,8 @@ def main():
         train_loader.sampler.set_epoch(epoch)
 
         trainer.epoch = epoch
-        train_loss, train_perf = trainer.optimize(train_loader)
+        with torch.autograd.profiler.emit_nvtx():
+            train_loss, train_perf = trainer.optimize(train_loader)
         training_perf.append(train_perf)
 
         # evaluate on validation set
@@ -620,4 +625,5 @@ def main():
 
 
 if __name__ == '__main__':
+    pyprof.init(enable_function_stack=True)
     main()
