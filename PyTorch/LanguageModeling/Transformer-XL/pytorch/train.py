@@ -1,6 +1,6 @@
 # coding: utf-8
 
-# Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,6 +32,9 @@ import torch.optim as optim
 import yaml
 from apex import amp
 from torch.nn.parallel import DistributedDataParallel
+import torch.cuda.profiler as profiler
+import torch.autograd.profiler
+import pyprof
 
 import lamb
 import utils
@@ -220,6 +223,8 @@ def parse_args():
                           help='Use the same attn length for all tokens')
     training.add_argument('--varlen', action='store_true',
                           help='Use variable length')
+    training.add_argument('--swap_mem', action='store_true',
+                          help='Swap memory tensors to cpu')
 
     val = parser.add_argument_group('validation setup')
     val.add_argument('--eval_tgt_len', type=int, default=192,
@@ -418,7 +423,7 @@ def evaluate(eval_iter, model, args):
 def train(tr_iter, va_iter, model, para_model, model_config, optimizer,
           optimizer_sparse, scheduler, scheduler_sparse, vocab, epoch,
           last_batch, last_iter, train_step, best_val_loss, meters,
-          timeout_handler, args):
+          timeout_handler, device, args):
     # Turn on training mode which enables dropout.
     model.train()
 
@@ -443,10 +448,20 @@ def train(tr_iter, va_iter, model, para_model, model_config, optimizer,
         data_chunks = torch.chunk(data, args.batch_chunk, 1)
         target_chunks = torch.chunk(target, args.batch_chunk, 1)
 
+        cpu = torch.device('cpu')
+
         for i in range(args.batch_chunk):
             data_i = data_chunks[i].contiguous()
             target_i = target_chunks[i].contiguous()
+
+            if args.swap_mem and mems[i] is not None:
+                mems[i] = mems[i].to(device, non_blocking=True)
+
             loss, mems[i] = para_model(data_i, target_i, mems[i])
+
+            if args.swap_mem and mems[i] is not None:
+                mems[i] = mems[i].to(cpu, non_blocking=True)
+
             loss = loss.float().mean().type_as(loss) / args.batch_chunk
 
             if args.fp16:
@@ -899,7 +914,7 @@ def main():
                     tr_iter, va_iter, model, para_model, model_config,
                     optimizer, optimizer_sparse, scheduler, scheduler_sparse,
                     vocab, epoch, last_batch, last_iter, train_step,
-                    best_val_loss, meters, timeout_handler, args
+                    best_val_loss, meters, timeout_handler, device, args
                     )
 
                 last_batch = 0
@@ -976,6 +991,7 @@ def main():
 
 
 if __name__ == "__main__":
+    pyprof.init(enable_function_stack=True)
     # Disable profiling executor
     try:
         torch._C._jit_set_profiling_executor(False)
