@@ -1,4 +1,4 @@
-# Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,14 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG FROM_IMAGE_NAME=nvcr.io/nvidia/pytorch:19.09-py3
-FROM ${FROM_IMAGE_NAME}
+#! /bin/bash
 
-RUN apt-get update && \
-    apt-get install -y unzip
-
-ADD requirements.txt .
-RUN pip install -r requirements.txt
-
-ADD . /workspace/recommendation
-WORKDIR /workspace/recommendation
+./prepare_dataset.sh ml-20m /temporary_ncf_data /ncf_data/cache/ml-20m

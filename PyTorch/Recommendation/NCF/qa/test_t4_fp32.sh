@@ -12,14 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG FROM_IMAGE_NAME=nvcr.io/nvidia/pytorch:19.09-py3
-FROM ${FROM_IMAGE_NAME}
 
-RUN apt-get update && \
-    apt-get install -y unzip
+#!/bin/bash
+set -e
+set -x
 
-ADD requirements.txt .
-RUN pip install -r requirements.txt
+HARDWARE="T4"
+PRECISION="fp32"
 
-ADD . /workspace/recommendation
-WORKDIR /workspace/recommendation
+python inference.py --opt_level O0| tee nv.log
+python -m logger.analyzer nv.log > nvlog.json
+python qa/utils/compare.py --input nvlog.json --baseline ./qa/baseline_results/${HARDWARE}_${PRECISION}.json \
+                           --keys best_inference_throughput,best_inference_latency

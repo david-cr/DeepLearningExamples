@@ -12,14 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG FROM_IMAGE_NAME=nvcr.io/nvidia/pytorch:19.09-py3
-FROM ${FROM_IMAGE_NAME}
 
-RUN apt-get update && \
-    apt-get install -y unzip
+#!/bin/bash
+set -e
+set -x
 
-ADD requirements.txt .
-RUN pip install -r requirements.txt
+HARDWARE="DGX_1V_16G"
+PRECISION="fp16"
 
-ADD . /workspace/recommendation
-WORKDIR /workspace/recommendation
+./qa/utils/prepare_qa_dataset.sh
+
+python -m torch.distributed.launch --nproc_per_node=8 ncf.py --data /ncf_data/cache/ml-20m --checkpoint_dir /ncf_data/checkpoints | tee nv.log
+python -m logger.analyzer nv.log > nvlog.json
+
+python qa/utils/compare.py --input nvlog.json --baseline ./qa/baseline_results/${HARDWARE}_${PRECISION}.json \
+                           --keys best_train_throughput,best_eval_throughput,best_accuracy
