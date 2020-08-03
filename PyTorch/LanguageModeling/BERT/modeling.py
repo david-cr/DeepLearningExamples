@@ -119,15 +119,10 @@ def load_tf_weights_in_bert(model, tf_checkpoint_path):
 def gelu(x):
     return x * 0.5 * (1.0 + torch.erf(x / 1.41421))
 
-#used only for triton inference
 def bias_gelu(bias, y):
     x = bias + y
+    # return torch.nn.functional.gelu(x) # Breaks ONNX export
     return x * 0.5 * (1.0 + torch.erf(x / 1.41421))
-
-# used specifically for training since torch.nn.functional.gelu breaks ONNX export
-def bias_gelu_training(bias, y):
-    x = bias + y
-    return torch.nn.functional.gelu(x) # Breaks ONNX export
 
 def bias_tanh(bias, y):
     x = bias + y

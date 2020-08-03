@@ -32,16 +32,19 @@ import torch
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
                               TensorDataset)
 from torch.utils.data.distributed import DistributedSampler
+import torch.cuda.profiler as profiler
+import torch.autograd.profiler
 from tqdm import tqdm, trange
 
 from apex import amp
 from schedulers import LinearWarmUpScheduler
 from file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-import modeling
+from modeling import BertForQuestionAnswering, BertConfig, WEIGHTS_NAME, CONFIG_NAME
 from optimization import BertAdam, warmup_linear
 from tokenization import (BasicTokenizer, BertTokenizer, whitespace_tokenize)
 from utils import is_main_process, format_step
 import dllogger, time
+import pyprof
 
 torch._C._jit_set_profiling_mode(False)
 torch._C._jit_set_profiling_executor(False)
@@ -788,16 +791,11 @@ def main():
                         help="Whether to lower case the input text. True for uncased models, False for cased models.")
     parser.add_argument("--local_rank",
                         type=int,
-                        default=os.getenv('LOCAL_RANK', -1),
+                        default=-1,
                         help="local_rank for distributed training on gpus")
     parser.add_argument('--fp16',
-                        default=False,
                         action='store_true',
-                        help="Mixed precision training")
-    parser.add_argument('--amp',
-                        default=False,
-                        action='store_true',
-                        help="Mixed precision training")
+                        help="Whether to use 16-bit float precision instead of 32-bit")
     parser.add_argument('--loss_scale',
                         type=float, default=0,
                         help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
@@ -851,7 +849,9 @@ def main():
                         help="Location to cache train feaures. Will default to the dataset directory")
 
     args = parser.parse_args()
-    args.fp16 = args.fp16 or args.amp    
+
+    if args.use_env and 'LOCAL_RANK' in os.environ:
+        args.local_rank = int(os.environ['LOCAL_RANK'])
 
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -920,14 +920,13 @@ def main():
             num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
 
     # Prepare model
-    config = modeling.BertConfig.from_json_file(args.config_file)
+    config = BertConfig.from_json_file(args.config_file)
     # Padding for divisibility by 8
     if config.vocab_size % 8 != 0:
         config.vocab_size += 8 - (config.vocab_size % 8)
 
-    modeling.ACT2FN["bias_gelu"] = modeling.bias_gelu_training
-    model = modeling.BertForQuestionAnswering(config)
-    # model = modeling.BertForQuestionAnswering.from_pretrained(args.bert_model,
+    model = BertForQuestionAnswering(config)
+    # model = BertForQuestionAnswering.from_pretrained(args.bert_model,
                 # cache_dir=os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed_{}'.format(args.local_rank)))
     dllogger.log(step="PARAMETER", data={"loading_checkpoint": True})
     model.load_state_dict(torch.load(args.init_checkpoint, map_location='cpu')["model"], strict=False)
@@ -1038,64 +1037,65 @@ def main():
         train_start = time.time()
         for epoch in range(int(args.num_train_epochs)):
             train_iter = tqdm(train_dataloader, desc="Iteration", disable=args.disable_progress_bar) if is_main_process() else train_dataloader
-            for step, batch in enumerate(train_iter):
+            with torch.autograd.profiler.emit_nvtx():
+                for step, batch in enumerate(train_iter):
                 # Terminate early for benchmarking
                 
-                if args.max_steps > 0 and global_step > args.max_steps:
-                    break
+                    if args.max_steps > 0 and global_step > args.max_steps:
+                        break
 
-                if n_gpu == 1:
-                    batch = tuple(t.to(device) for t in batch)  # multi-gpu does scattering it-self
-                input_ids, input_mask, segment_ids, start_positions, end_positions = batch
-                start_logits, end_logits = model(input_ids, segment_ids, input_mask)
-                # If we are on multi-GPU, split add a dimension
-                if len(start_positions.size()) > 1:
-                    start_positions = start_positions.squeeze(-1)
-                if len(end_positions.size()) > 1:
-                    end_positions = end_positions.squeeze(-1)
-                # sometimes the start/end positions are outside our model inputs, we ignore these terms
-                ignored_index = start_logits.size(1)
-                start_positions.clamp_(0, ignored_index)
-                end_positions.clamp_(0, ignored_index)
+                    if n_gpu == 1:
+                        batch = tuple(t.to(device) for t in batch)  # multi-gpu does scattering it-self
+                    input_ids, input_mask, segment_ids, start_positions, end_positions = batch
+                    start_logits, end_logits = model(input_ids, segment_ids, input_mask)
+                    # If we are on multi-GPU, split add a dimension
+                    if len(start_positions.size()) > 1:
+                        start_positions = start_positions.squeeze(-1)
+                    if len(end_positions.size()) > 1:
+                        end_positions = end_positions.squeeze(-1)
+                    # sometimes the start/end positions are outside our model inputs, we ignore these terms
+                    ignored_index = start_logits.size(1)
+                    start_positions.clamp_(0, ignored_index)
+                    end_positions.clamp_(0, ignored_index)
 
-                loss_fct = torch.nn.CrossEntropyLoss(ignore_index=ignored_index)
-                start_loss = loss_fct(start_logits, start_positions)
-                end_loss = loss_fct(end_logits, end_positions)
-                loss = (start_loss + end_loss) / 2
-                if n_gpu > 1:
-                    loss = loss.mean()  # mean() to average on multi-gpu.
-                if args.gradient_accumulation_steps > 1:
-                    loss = loss / args.gradient_accumulation_steps
-                if args.fp16:
-                    with amp.scale_loss(loss, optimizer) as scaled_loss:
-                        scaled_loss.backward()
-                else:
-                    loss.backward()
-                
-                # gradient clipping  
-                gradClipper.step(amp.master_params(optimizer))         
- 
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    if args.fp16 :
-                        # modify learning rate with special warm up for BERT which FusedAdam doesn't do
-                        scheduler.step()
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    global_step += 1
+                    loss_fct = torch.nn.CrossEntropyLoss(ignore_index=ignored_index)
+                    start_loss = loss_fct(start_logits, start_positions)
+                    end_loss = loss_fct(end_logits, end_positions)
+                    loss = (start_loss + end_loss) / 2
+                    if n_gpu > 1:
+                        loss = loss.mean()  # mean() to average on multi-gpu.
+                    if args.gradient_accumulation_steps > 1:
+                        loss = loss / args.gradient_accumulation_steps
+                    if args.fp16:
+                        with amp.scale_loss(loss, optimizer) as scaled_loss:
+                            scaled_loss.backward()
+                    else:
+                        loss.backward()
+                    
+                    # gradient clipping  
+                    gradClipper.step(amp.master_params(optimizer))         
+    
+                    if (step + 1) % args.gradient_accumulation_steps == 0:
+                        if args.fp16 :
+                            # modify learning rate with special warm up for BERT which FusedAdam doesn't do
+                            scheduler.step()
+                        optimizer.step()
+                        optimizer.zero_grad()
+                        global_step += 1
 
-                final_loss = loss.item()
-                if step % args.log_freq == 0:
-                    dllogger.log(step=(epoch, global_step,), data={"step_loss": final_loss,
-                                                                   "learning_rate": optimizer.param_groups[0]['lr']})
+                    final_loss = loss.item()
+                    if step % args.log_freq == 0:
+                        dllogger.log(step=(epoch, global_step,), data={"step_loss": final_loss,
+                                                                    "learning_rate": optimizer.param_groups[0]['lr']})
 
         time_to_train = time.time() - train_start
 
     if args.do_train and is_main_process() and not args.skip_checkpoint:
         # Save a trained model and the associated configuration
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
-        output_model_file = os.path.join(args.output_dir, modeling.WEIGHTS_NAME)
+        output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
         torch.save({"model":model_to_save.state_dict()}, output_model_file)
-        output_config_file = os.path.join(args.output_dir, modeling.CONFIG_NAME)
+        output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
         with open(output_config_file, 'w') as f:
             f.write(model_to_save.config.to_json_string())
 
@@ -1196,5 +1196,6 @@ def main():
         dllogger.log(step=tuple(), data={"exact_match": exact_match, "F1": f1})
 
 if __name__ == "__main__":
+    pyprof.init(enable_function_stack=True)
     main()
     dllogger.flush()

@@ -29,18 +29,16 @@ seed=${12:-42}
 job_name=${13:-"bert_lamb_pretraining"}
 allreduce_post_accumulation=${14:-"true"}
 allreduce_post_accumulation_fp16=${15:-"true"}
-train_batch_size_phase2=${16:-4096}
-learning_rate_phase2=${17:-"4e-3"}
-warmup_proportion_phase2=${18:-"0.128"}
-train_steps_phase2=${19:-1563}
-gradient_accumulation_steps_phase2=${20:-512}
+train_batch_size_phase2=${17:-4096}
+learning_rate_phase2=${18:-"4e-3"}
+warmup_proportion_phase2=${19:-"0.128"}
+train_steps_phase2=${20:-1563}
+gradient_accumulation_steps_phase2=${21:-512}
 DATASET=hdf5_lower_case_1_seq_len_128_max_pred_20_masked_lm_prob_0.15_random_seed_12345_dupe_factor_5_shard_1472_test_split_10/books_wiki_en_corpus/training # change this for other datasets
-DATA_DIR_PHASE1=${21:-$BERT_PREP_WORKING_DIR/${DATASET}/}
+DATA_DIR_PHASE1=${22:-$BERT_PREP_WORKING_DIR/${DATASET}/}
 BERT_CONFIG=bert_config.json
-DATASET2=hdf5_lower_case_1_seq_len_512_max_pred_80_masked_lm_prob_0.15_random_seed_12345_dupe_factor_5_shard_1472_test_split_10/books_wiki_en_corpus/training # change this for other datasets
-DATA_DIR_PHASE2=${22:-$BERT_PREP_WORKING_DIR/${DATASET2}/}
-CODEDIR=${23:-"/workspace/bert"}
-init_checkpoint=${24:-"None"}
+CODEDIR=${24:-"/workspace/bert"}
+init_checkpoint=${25:-"None"}
 RESULTS_DIR=$CODEDIR/results
 CHECKPOINTS_DIR=$RESULTS_DIR/checkpoints
 
@@ -68,8 +66,6 @@ PREC=""
 if [ "$precision" = "fp16" ] ; then
    PREC="--fp16"
 elif [ "$precision" = "fp32" ] ; then
-   PREC=""
-elif [ "$precision" = "tf32" ] ; then
    PREC=""
 else
    echo "Unknown <precision> argument"
@@ -151,12 +147,13 @@ echo "finished pretraining"
 
 #Start Phase2
 
+DATASET=hdf5_lower_case_1_seq_len_512_max_pred_80_masked_lm_prob_0.15_random_seed_12345_dupe_factor_5_shard_1472_test_split_10/books_wiki_en_corpus/training # change this for other datasets
+DATA_DIR_PHASE2=${23:-$BERT_PREP_WORKING_DIR/${DATASET}/}
+
 PREC=""
 if [ "$precision" = "fp16" ] ; then
    PREC="--fp16"
 elif [ "$precision" = "fp32" ] ; then
-   PREC=""
-elif [ "$precision" = "tf32" ] ; then
    PREC=""
 else
    echo "Unknown <precision> argument"
