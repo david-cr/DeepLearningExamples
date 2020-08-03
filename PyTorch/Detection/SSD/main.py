@@ -19,6 +19,8 @@ import torch
 import numpy as np
 from torch.optim.lr_scheduler import MultiStepLR
 import torch.utils.data.distributed
+import torch.cuda.profiler as profiler
+import torch.autograd.profiler
 
 from src.model import SSD300, ResNet, Loss
 from src.utils import dboxes300_coco, Encoder
@@ -28,6 +30,7 @@ from src.train import train_loop, tencent_trick, load_checkpoint, benchmark_trai
 from src.data import get_train_loader, get_val_dataset, get_val_dataloader, get_coco_ground_truth
 
 import dllogger as DLLogger
+import pyprof
 
 
 # Apex imports
@@ -260,6 +263,7 @@ def log_params(logger, args):
     })
 
 if __name__ == "__main__":
+    pyprof.init(enable_function_stack=True)
     parser = make_parser()
     args = parser.parse_args()
     args.local_rank = int(os.environ.get('LOCAL_RANK', args.local_rank))
@@ -285,4 +289,5 @@ if __name__ == "__main__":
 
     log_params(logger, args)
 
-    train(train_loop_func, logger, args)
+    with torch.autograd.profiler.emit_nvtx():
+        train(train_loop_func, logger, args)
