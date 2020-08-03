@@ -32,6 +32,9 @@ from helpers import (add_ctc_labels, model_multi_gpu, monitor_asr_train_progress
 from model import AudioPreprocessing, CTCLossNM, GreedyCTCDecoder, Jasper
 from optimizers import Novograd, AdamW
 
+import torch.cuda.profiler as profiler
+import pyprof
+
 
 def lr_policy(initial_lr, step, N):
     """
@@ -415,15 +418,16 @@ def main(args):
     else:
         args.start_epoch = 0
 
-    train(data_layer, data_layer_eval, model, ema_model,
-          ctc_loss=ctc_loss, \
-          greedy_decoder=greedy_decoder, \
-          optimizer=optimizer, \
-          labels=ctc_vocab, \
-          optim_level=optim_level, \
-          multi_gpu=multi_gpu, \
-          fn_lr_policy=fn_lr_policy if args.lr_decay else None, \
-          args=args)
+    with torch.autograd.profiler.emit_nvtx():
+        train(data_layer, data_layer_eval, model, ema_model,
+            ctc_loss=ctc_loss, \
+            greedy_decoder=greedy_decoder, \
+            optimizer=optimizer, \
+            labels=ctc_vocab, \
+            optim_level=optim_level, \
+            multi_gpu=multi_gpu, \
+            fn_lr_policy=fn_lr_policy if args.lr_decay else None, \
+            args=args)
 
 
 def parse_args():
@@ -457,6 +461,8 @@ def parse_args():
 
 
 if __name__=="__main__":
+    pyprof.init(enable_function_stack=True)
+
     args = parse_args()
     print_dict(vars(args))
     main(args)
