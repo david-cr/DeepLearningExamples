@@ -13,6 +13,8 @@ import logging
 import functools
 
 import torch
+import torch.cuda.profiler as profiler
+import torch.autograd.profiler
 from maskrcnn_benchmark.config import cfg
 from maskrcnn_benchmark.data import make_data_loader
 from maskrcnn_benchmark.solver import make_lr_scheduler
@@ -31,6 +33,7 @@ from maskrcnn_benchmark.utils.logger import format_step
 #from dllogger import Logger, StdOutBackend, JSONStreamBackend, Verbosity
 #import dllogger as DLLogger
 import dllogger
+import pyprof
 from maskrcnn_benchmark.utils.logger import format_step
 
 # See if we can use apex.DistributedDataParallel instead of the torch default,
@@ -286,7 +289,8 @@ def main():
     else:
         fp16 = False
 
-    model, iters_per_epoch = train(cfg, args.local_rank, args.distributed, fp16, dllogger)
+    with torch.autograd.profiler.emit_nvtx():
+        model, iters_per_epoch = train(cfg, args.local_rank, args.distributed, fp16, dllogger)
 
     if not args.skip_test:
         if not cfg.PER_EPOCH_EVAL:
@@ -294,6 +298,7 @@ def main():
 
 
 if __name__ == "__main__":
+    pyprof.init(enable_function_stack=True)
     main()
     dllogger.log(step=tuple(), data={})
     dllogger.flush()
