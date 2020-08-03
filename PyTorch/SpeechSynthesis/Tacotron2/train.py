@@ -38,6 +38,8 @@ from torch.nn.parameter import Parameter
 
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
+import torch.cuda.profiler as profiler
+import torch.autograd.profiler
 
 from apex.parallel import DistributedDataParallel as DDP
 
@@ -47,6 +49,7 @@ import data_functions
 
 import dllogger as DLLogger
 from dllogger import StdOutBackend, JSONStreamBackend, Verbosity
+import pyprof
 
 from scipy.io.wavfile import write as write_wav
 
@@ -457,58 +460,59 @@ def main():
         if distributed_run:
             train_loader.sampler.set_epoch(epoch)
 
-        for i, batch in enumerate(train_loader):
-            torch.cuda.synchronize()
-            iter_start_time = time.perf_counter()
-            DLLogger.log(step=(epoch, i),
-                         data={'glob_iter/iters_per_epoch': str(iteration)+"/"+str(len(train_loader))})
+        with torch.autograd.profiler.emit_nvtx():
+            for i, batch in enumerate(train_loader):
+                torch.cuda.synchronize()
+                iter_start_time = time.perf_counter()
+                DLLogger.log(step=(epoch, i),
+                            data={'glob_iter/iters_per_epoch': str(iteration)+"/"+str(len(train_loader))})
 
-            adjust_learning_rate(iteration, epoch, optimizer, args.learning_rate,
-                                 args.anneal_steps, args.anneal_factor, local_rank)
+                adjust_learning_rate(iteration, epoch, optimizer, args.learning_rate,
+                                    args.anneal_steps, args.anneal_factor, local_rank)
 
-            model.zero_grad()
-            x, y, num_items = batch_to_gpu(batch)
+                model.zero_grad()
+                x, y, num_items = batch_to_gpu(batch)
 
-            y_pred = model(x)
-            loss = criterion(y_pred, y)
+                y_pred = model(x)
+                loss = criterion(y_pred, y)
 
-            if distributed_run:
-                reduced_loss = reduce_tensor(loss.data, world_size).item()
-                reduced_num_items = reduce_tensor(num_items.data, 1).item()
-            else:
-                reduced_loss = loss.item()
-                reduced_num_items = num_items.item()
-            if np.isnan(reduced_loss):
-                raise Exception("loss is NaN")
+                if distributed_run:
+                    reduced_loss = reduce_tensor(loss.data, world_size).item()
+                    reduced_num_items = reduce_tensor(num_items.data, 1).item()
+                else:
+                    reduced_loss = loss.item()
+                    reduced_num_items = num_items.item()
+                if np.isnan(reduced_loss):
+                    raise Exception("loss is NaN")
 
-            DLLogger.log(step=(epoch,i), data={'train_loss': reduced_loss})
+                DLLogger.log(step=(epoch,i), data={'train_loss': reduced_loss})
 
-            num_iters += 1
+                num_iters += 1
 
-            # accumulate number of items processed in this epoch
-            reduced_num_items_epoch += reduced_num_items
+                # accumulate number of items processed in this epoch
+                reduced_num_items_epoch += reduced_num_items
 
-            if args.amp:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    amp.master_params(optimizer), args.grad_clip_thresh)
-            else:
-                loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), args.grad_clip_thresh)
+                if args.amp:
+                    with amp.scale_loss(loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        amp.master_params(optimizer), args.grad_clip_thresh)
+                else:
+                    loss.backward()
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), args.grad_clip_thresh)
 
-            optimizer.step()
+                optimizer.step()
 
-            torch.cuda.synchronize()
-            iter_stop_time = time.perf_counter()
-            iter_time = iter_stop_time - iter_start_time
-            items_per_sec = reduced_num_items/iter_time
-            train_epoch_items_per_sec += items_per_sec
+                torch.cuda.synchronize()
+                iter_stop_time = time.perf_counter()
+                iter_time = iter_stop_time - iter_start_time
+                items_per_sec = reduced_num_items/iter_time
+                train_epoch_items_per_sec += items_per_sec
 
-            DLLogger.log(step=(epoch, i), data={'train_items_per_sec': items_per_sec})
-            DLLogger.log(step=(epoch, i), data={'train_iter_time': iter_time})
-            iteration += 1
+                DLLogger.log(step=(epoch, i), data={'train_items_per_sec': items_per_sec})
+                DLLogger.log(step=(epoch, i), data={'train_iter_time': iter_time})
+                iteration += 1
 
         torch.cuda.synchronize()
         epoch_stop_time = time.perf_counter()
@@ -542,4 +546,5 @@ def main():
         DLLogger.flush()
 
 if __name__ == '__main__':
+    pyprof.init(enable_function_stack=True)
     main()
