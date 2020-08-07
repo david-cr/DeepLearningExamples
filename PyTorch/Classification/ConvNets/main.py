@@ -36,6 +36,7 @@ import random
 import numpy as np
 import torch
 from torch.autograd import Variable
+import torch.cuda.profiler as profiler
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
@@ -65,6 +66,7 @@ from image_classification.training import *
 from image_classification.utils import *
 
 import dllogger
+import pyprof
 
 
 def add_parser_arguments(parser):
@@ -538,4 +540,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     cudnn.benchmark = True
 
+    pyprof.init(enable_function_stack=True)
     main(args)

@@ -331,24 +331,25 @@ def train(
     if prof > 0:
         data_iter = utils.first_n(prof, data_iter)
 
-    for i, (input, target) in data_iter:
-        bs = input.size(0)
-        lr_scheduler(optimizer, i, epoch)
-        data_time = time.time() - end
+    with torch.autograd.profiler.emit_nvtx():
+        for i, (input, target) in data_iter:
+            bs = input.size(0)
+            lr_scheduler(optimizer, i, epoch)
+            data_time = time.time() - end
 
-        optimizer_step = ((i + 1) % batch_size_multiplier) == 0
-        loss = step(input, target, optimizer_step=optimizer_step)
+            optimizer_step = ((i + 1) % batch_size_multiplier) == 0
+            loss = step(input, target, optimizer_step=optimizer_step)
 
-        it_time = time.time() - end
+            it_time = time.time() - end
 
-        if logger is not None:
-            logger.log_metric("train.loss", to_python_float(loss), bs)
-            logger.log_metric("train.compute_ips", calc_ips(bs, it_time - data_time))
-            logger.log_metric("train.total_ips", calc_ips(bs, it_time))
-            logger.log_metric("train.data_time", data_time)
-            logger.log_metric("train.compute_time", it_time - data_time)
+            if logger is not None:
+                logger.log_metric("train.loss", to_python_float(loss), bs)
+                logger.log_metric("train.compute_ips", calc_ips(bs, it_time - data_time))
+                logger.log_metric("train.total_ips", calc_ips(bs, it_time))
+                logger.log_metric("train.data_time", data_time)
+                logger.log_metric("train.compute_time", it_time - data_time)
 
-        end = time.time()
+            end = time.time()
 
 
 def get_val_step(model_and_loss):
